@@ -3,9 +3,13 @@ import os
 import sys
 import time
 import datetime
+import math
+
+from osgeo import osr
+from osgeo import ogr
 
 import pymapmatch.osmmapmatch as omm
-from common import read_gtfs_shapes, read_gtfs_routes, read_gtfs_shape_trips, GtfsShapeWriter
+from common import read_gtfs_shapes, GtfsShapeWriter
 from collections import defaultdict
 import itertools
 
@@ -26,24 +30,36 @@ def stderr(*args):
 	with stderr_lock:
 		print >>sys.stderr, ' '.join(args)
 
-def gtfs_shape_mapfit(map_file, projection, gtfs_directory, whitelist=None, search_region=100.0, node_ids=False):
+def gtfs_shape_mapfit(map_file, projection, whitelist=None, search_region=130.0, node_ids=False):
 	
-	if whitelist:
-		whitelist = set(whitelist.split(','))
-	def gfile(fname):
-		return open(os.path.join(gtfs_directory, fname))
-	routes = read_gtfs_routes(gfile('routes.txt'))
-	shapes = read_gtfs_shapes(gfile('shapes.txt'))
-	shape_trips = read_gtfs_shape_trips(gfile('trips.txt'))
-	def shape_route_type(shape_id):
-		route_ids = set(t.route_id for t in shape_trips[shape_id])
-		if not route_ids:
-			return None
-		types = set(routes[r_id].route_type for r_id in route_ids)
-		if len(types) != 1:
-			raise ShapeError("Multiple route types for shape %s!"%(shape_id))
-		return types.pop()
+	#if whitelist:
+	#	whitelist = set(whitelist.split(','))
+	#def gfile(fname):
+	#	return open(os.path.join(gtfs_directory, fname))
+	#routes = read_gtfs_routes(gfile('routes.txt'))
+	shapeFile = ogr.Open('linjaukset.shp')
+	layer = shapeFile.GetLayer()
+
+	destSrs = osr.SpatialReference()
+	destSrs.ImportFromEPSG(4326)
+	#shape_trips = read_gtfs_shape_trips(gfile('trips.txt'))
+	#def shape_route_type(shape_id):
+		#return '3'
+		#route_ids = set(t.route_id for t in shape_trips[shape_id])
+		#if not route_ids:
+		#	return None
+		#types = set(routes[r_id].route_type for r_id in route_ids)
+		#if len(types) != 1:
+		#	raise ShapeError("Multiple route types for shape %s!"%(shape_id))
+		#return types.pop()
 	
+	def getShapes():
+		for line in iter(layer):
+			line.GetGeometryRef().TransformTo(destSrs)
+			points = line.GetGeometryRef().GetPoints()
+			lon, lat = zip(*points)[0:2]
+			yield (line.GetFieldAsString("VUORO_LISA"), zip(lat, lon)) 
+
 	projection = omm.CoordinateProjector(projection)
 	
 	def sync(method):
@@ -76,7 +92,7 @@ def gtfs_shape_mapfit(map_file, projection, gtfs_directory, whitelist=None, sear
 	from multiprocessing.pool import ThreadPool
 	def do_fit(shape):
 		shape_id, shape_coords = shape
-		route_type = shape_route_type(shape_id)
+		route_type = '3' #shape_route_type(shape_id)
 		type_filter = ROUTE_TYPE_FILTERS.get(route_type)
 		graph = graphs[type_filter]
 		if graph is None:
@@ -91,8 +107,10 @@ def gtfs_shape_mapfit(map_file, projection, gtfs_directory, whitelist=None, sear
 		matcher.measurements(times, points)
 		#for c in coords:
 		#	matcher.measurement(0, *c)
-		fitted_coords = [(p.x, p.y) for p in matcher.best_match_coordinates()]
+		fitted_coords = [(p.x, p.y) for p in matcher.best_match_coordinates() if not math.isnan(p.x) and not math.isnan(p.y)]
 		fitted_nodes = [p for p in matcher.best_match_node_ids()]
+		#stderr(str(fitted_nodes))
+		#stderr(str(fitted_coords))
 		fitted = [projection.inverse(*c) for c in fitted_coords]
 		
 		states = []
@@ -103,22 +121,24 @@ def gtfs_shape_mapfit(map_file, projection, gtfs_directory, whitelist=None, sear
 		
 		return shape_id, fitted, fitted_nodes, states, matcher, type_filter
 	
-	shapes = list(shapes)
-	if whitelist:
-		shapes = [s for s in shapes if s[0] in whitelist]
+	#shapes = list(shapes)
+	shapes = getShapes()
+	#if whitelist:
+	#	shapes = [s for s in shapes if s[0] in whitelist]
 	
 	start_time = time.time()
-	results = (do_fit(s) for s in shapes)
+	#results = (do_fit(s) for s in shapes)
 	extra_cols = []
-	if node_ids:
-		extra_cols.append('node_id')
+	#if node_ids:
+	#	extra_cols.append('node_id')
+	
 	shape_writer = GtfsShapeWriter(sys.stdout, *extra_cols)
-	for i, (shape_id, shape_coords, ids, states, matcher, type_filter) in enumerate(results):
+	for i, (shape_id, shape_coords, ids, states, matcher, type_filter) in enumerate(do_fit(s) for s in shapes):
 		likelihoods = [s.measurement_likelihood+s.transition_likelihood for s in states]
 		time_spent = time.time() - start_time
 		mean_time = time_spent/float(i+1)
-		time_left = mean_time*(len(shapes)-i)
-		status = "Shape %i/%i, approx %s left"%(i+1, len(shapes), datetime.timedelta(seconds=time_left))
+		time_left = mean_time*(11884-i)
+		status = "Shape %i/%i, approx %s left"%(i+1, 11884, datetime.timedelta(seconds=time_left))
 		if len(likelihoods) == 0:
 			minlik = None
 			n_outliers = 0
