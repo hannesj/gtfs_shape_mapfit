@@ -29,4 +29,4 @@ cp $TMP_DIR/stops.fitted.txt $GTFS_DIR/stops.txt
 
 zip -j $RESULT_FILE $GTFS_DIR/*
 
-rm -r $TMP_DIR
+#rm -r $TMP_DIR
